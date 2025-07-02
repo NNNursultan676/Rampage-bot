@@ -1,41 +1,39 @@
 import logging
 import os
-import asyncio
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, executor, types
 from aiogram.dispatcher.middlewares import BaseMiddleware
 from aiogram.dispatcher.handler import CancelHandler
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
-
-# 🔹 Для Flask
 from flask import Flask
 from threading import Thread
 
 load_dotenv()
 
 API_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_ID = -1002175210800         # новый ID группы
-LEADER_ID = 6352363504            # новый ID лидера
+GROUP_ID = -1002175210800       # ID твоей группы
+LEADER_ID = 6352363504          # ID лидера
 
 logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# Middleware: только для группы
+# Middleware: блокирует команды вне группы
 class GroupOnlyMiddleware(BaseMiddleware):
     async def on_pre_process_message(self, message: types.Message, data: dict):
         if message.chat.id != GROUP_ID:
             raise CancelHandler()
+
 dp.middleware.setup(GroupOnlyMiddleware())
 
-# Хранилища
+# Память
 join_requests = []
 accepted_users = []
 log = []
 
-# Команды
+# Команда /joinlist — показать входящие заявки
 @dp.message_handler(commands=['joinlist'])
 async def join_list_handler(message: types.Message):
     if not join_requests:
@@ -46,8 +44,9 @@ async def join_list_handler(message: types.Message):
         markup = InlineKeyboardMarkup().add(
             InlineKeyboardButton("✅ Принять", callback_data=f"accept_{user['id']}")
         )
-        await message.reply(f"Заявка от @{user['username']} (ID: {user['id']})", reply_markup=markup)
+        await message.reply(f"Заявка от {user['username']} (ID: {user['id']})", reply_markup=markup)
 
+# Обработка кнопки "Принять"
 @dp.callback_query_handler(lambda c: c.data.startswith('accept_'))
 async def accept_callback(callback_query: types.CallbackQuery):
     user_id = int(callback_query.data.split('_')[1])
@@ -63,7 +62,7 @@ async def accept_callback(callback_query: types.CallbackQuery):
         accepted_users.append(user)
         now = (datetime.utcnow() + timedelta(hours=3)).strftime("%d.%m.%Y %H:%M")  # МСК (UTC+3)
         log.append(
-            f"✅ @{callback_query.from_user.username or 'admin'} принял @{user['username']} "
+            f"✅ {callback_query.from_user.username or 'admin'} принял {user['username']} "
             f"(ID: {user['id']}) в {now} по МСК"
         )
         await callback_query.answer("Пользователь принят.")
@@ -71,6 +70,7 @@ async def accept_callback(callback_query: types.CallbackQuery):
         await callback_query.answer("Ошибка при принятии.")
         logging.error(e)
 
+# Команда /info4leader — журнал всех принятых
 @dp.message_handler(commands=['info4leader'])
 async def info_for_leader(message: types.Message):
     if message.from_user.id != LEADER_ID:
@@ -80,25 +80,39 @@ async def info_for_leader(message: types.Message):
     else:
         await message.reply("\n".join(log))
 
+# Команда /clearlog — очистка журнала
 @dp.message_handler(commands=['clearlog'])
 async def clear_log(message: types.Message):
     if message.from_user.id == LEADER_ID:
         log.clear()
         await message.reply("Журнал очищен.")
 
+# Команда /restart — перезапуск (только лидер)
+@dp.message_handler(commands=['restart'])
+async def restart_bot(message: types.Message):
+    if message.from_user.id == LEADER_ID:
+        await message.reply("♻️ Перезапуск бота...")
+        os._exit(0)
+
+# Новая заявка
 @dp.chat_join_request_handler()
 async def handle_join_request(request: types.ChatJoinRequest):
+    # Исключить дублирование заявок
+    if any(u['id'] == request.from_user.id for u in join_requests):
+        return
+
     join_requests.append({
         "id": request.from_user.id,
         "username": request.from_user.username or "без ника"
     })
-    await bot.send_message(GROUP_ID, f"🆕 Новая заявка от @{request.from_user.username or 'без ника'}")
+    await bot.send_message(GROUP_ID, f"🆕 Новая заявка от {request.from_user.username or 'без ника'}")
 
+# /start в личку
 @dp.message_handler(commands=['start'], chat_type=types.ChatType.PRIVATE)
 async def private_start(message: types.Message):
     await message.reply("❗ Этот бот работает только внутри группы.")
 
-# 🔹 Flask сервер для пинга
+# Пингер через Flask
 app = Flask(__name__)
 
 @app.route('/')
@@ -109,7 +123,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# ⏯ Запуск бота и Flask
+# Запуск
 if __name__ == '__main__':
     Thread(target=run_flask).start()
     executor.start_polling(dp, skip_updates=True)
